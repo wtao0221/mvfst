@@ -58,6 +58,8 @@ void FizzServerHandshake::initializeImpl(
       *fizzContext_->getContext());
   context->setFactory(cryptoFactory_->getFizzFactory());
   context->setSupportedCiphers({{fizz::CipherSuite::TLS_AES_128_GCM_SHA256}});
+  // Tao
+  context->setSupportedAlpns({"h1q-fb", "hq"});
   context->setVersionFallbackEnabled(false);
   // Since Draft-17, client won't sent EOED
   context->setOmitEarlyRecordLayer(true);

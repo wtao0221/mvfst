@@ -12,6 +12,11 @@
 #include <quic/codec/Decode.h>
 #include <quic/codec/PacketNumber.h>
 
+#if TAO_DISABLE_ENCRYPTION
+#include <cstdio>
+#include <arpa/inet.h>
+#endif
+
 namespace {
 quic::ConnectionId zeroConnId() {
   std::vector<uint8_t> zeroData(quic::kDefaultConnectionIdSize, 0);
@@ -249,6 +254,7 @@ CodecResult QuicReadCodec::parseLongHeaderPacket(
 
   return decodeRegularPacket(
       std::move(longHeader), params_, std::move(decrypted));
+  // Tao: where long-pkt decryption happens
 }
 
 CodecResult QuicReadCodec::tryParseShortHeaderPacket(
@@ -257,6 +263,7 @@ CodecResult QuicReadCodec::tryParseShortHeaderPacket(
     size_t dstConnIdSize,
     folly::io::Cursor& cursor) {
   // TODO: allow other connid lengths from the state.
+#if !TAO_DISABLE_ENCRYPTION
   size_t packetNumberOffset = 1 + dstConnIdSize;
   PacketNum expectedNextPacketNum =
       ackStates.appDataAckState.largestReceivedPacketNum
@@ -270,6 +277,7 @@ CodecResult QuicReadCodec::tryParseShortHeaderPacket(
     return CodecResult(Nothing());
   }
 
+  // Tao: here is what decrypt happens?
   folly::MutableByteRange initialByteRange(data->writableData(), 1);
   folly::MutableByteRange packetNumberByteRange(
       data->writableData() + packetNumberOffset, kMaxPacketNumEncodingSize);
@@ -320,6 +328,88 @@ CodecResult QuicReadCodec::tryParseShortHeaderPacket(
 
   return decodeRegularPacket(
       std::move(*shortHeader), params_, std::move(decrypted));
+#else // Tao: disable encryption
+  size_t packetNumberOffset = 1 + dstConnIdSize;
+  PacketNum expectedNextPacketNum =
+      ackStates.appDataAckState.largestReceivedPacketNum
+      ? (1 + *ackStates.appDataAckState.largestReceivedPacketNum)
+      : 0;
+
+  folly::MutableByteRange initialByteRange(data->writableData(), 1);
+  folly::MutableByteRange packetNumberByteRange(
+      data->writableData() + packetNumberOffset, kMaxPacketNumEncodingSize);
+
+  std::pair<PacketNum, size_t> packetNum = parsePacketNumber(
+      initialByteRange.data()[0], packetNumberByteRange, expectedNextPacketNum);
+  // VLOG(0) << initialByteRange.data()[0];
+  auto shortHeader =
+      parseShortHeader(initialByteRange.data()[0], cursor, dstConnIdSize);
+  /*
+  VLOG(0) << "packet number " << packetNum.first << " " << packetNum.second;
+  VLOG(0) << initialByteRange.data()[0];
+  printf("%2x\n", *(data->writableData()));
+  int j=0;
+  for (int i=0; i<data->computeChainDataLength(); i++) {
+      printf("%2x", *(data->data()+i));
+      j++;
+      if (j==8) {
+          printf("\n");
+          j=0;
+      }
+  }
+  printf("\n");
+  */
+  if (!shortHeader) {
+    VLOG(10) << "Dropping packet, cannot parse " << connIdToHex();
+    return CodecResult(Nothing());
+  }
+  shortHeader->setPacketNumber(packetNum.first);
+  if (shortHeader->getProtectionType() == ProtectionType::KeyPhaseOne) {
+    VLOG(4) << nodeToString(nodeType_) << " cannot read key phase one packet "
+            << connIdToHex();
+    return CodecResult(Nothing());
+  }
+
+  // We know that the iobuf is not chained. This means that we can safely have a
+  // non-owning reference to the header without cloning the buffer. If we don't
+  // clone the buffer, the buffer will not show up as shared and we can decrypt
+  // in-place.
+  size_t aadLen = packetNumberOffset + packetNum.second;
+  data->trimStart(aadLen);
+
+  Buf decrypted;
+  decrypted = std::move(data);
+  if (!decrypted) {
+    // TODO better way of handling this (tests break without this)
+    decrypted = folly::IOBuf::create(0);
+  }
+
+  /*
+  VLOG(0) << "decoded packet number " << shortHeader->getPacketSequenceNum();
+  int j=0;
+  for (int i=0; i<decrypted->computeChainDataLength(); i++) {
+      printf("%2x", *(decrypted->data()+i));
+      j++;
+      if (j==8) {
+          printf("\n");
+          j=0;
+      }
+  }
+  printf("\n");
+  */
+  // VLOG(0) << decrypted->computeChainDataLength();
+  // printf("%2x\n", *(decrypted->data()));
+  /*
+  uint32_t test = *((uint32_t*)decrypted->data());
+  uint32_t htonl_test = htonl(test);
+  VLOG(0) << test;
+  VLOG(0) << htonl_test;
+  printf("%8x\n", test);
+  printf("%8x\n", htonl_test);*/
+
+  return decodeRegularPacket(
+      std::move(*shortHeader), params_, std::move(decrypted));
+#endif
 }
 
 CodecResult QuicReadCodec::parsePacket(

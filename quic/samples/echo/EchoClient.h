@@ -16,6 +16,7 @@
 #include <folly/fibers/Baton.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
 
+#include <quic/QuicConstants.h>
 #include <quic/api/QuicSocket.h>
 #include <quic/client/QuicClientTransport.h>
 #include <quic/common/BufUtil.h>
@@ -222,6 +223,8 @@ class EchoClient : public quic::QuicSocket::ConnectionSetupCallback,
         settings.maxStreamGroupsAdvertized = kNumTestStreamGroups;
       }
       quicClient_->setTransportSettings(settings);
+      // Tao
+      quicClient_->setSupportedVersions({QuicVersion::QUIC_V1});
 
       quicClient_->setTransportStatsCallback(
           std::make_shared<LogQuicStats>("client"));

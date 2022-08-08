@@ -263,6 +263,9 @@ class FrameScheduler : public QuicPacketScheduler {
     Builder& pingFrames();
     Builder& datagramFrames();
 
+#if TAO_DISABLE_ENCRYPTION
+    EncryptionLevel getEncryptionLevel();
+#endif
     FrameScheduler build() &&;
 
    private:

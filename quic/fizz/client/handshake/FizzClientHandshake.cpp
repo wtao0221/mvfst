@@ -49,6 +49,8 @@ FizzClientHandshake::connectImpl(folly::Optional<std::string> hostname) {
       *fizzContext_->getContext());
   context->setFactory(cryptoFactory_->getFizzFactory());
   context->setSupportedCiphers({fizz::CipherSuite::TLS_AES_128_GCM_SHA256});
+  // Tao
+  context->setSupportedAlpns({"h1q-fb", "hq"});
   context->setCompatibilityMode(false);
   // Since Draft-17, EOED should not be sent
   context->setOmitEarlyRecordLayer(true);

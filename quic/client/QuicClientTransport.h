@@ -31,7 +31,7 @@ class QuicClientTransport
       folly::EventBase* evb,
       std::unique_ptr<folly::AsyncUDPSocket> socket,
       std::shared_ptr<ClientHandshakeFactory> handshakeFactory,
-      size_t connectionIdSize = 0,
+      size_t connectionIdSize = 8, // Tao: set connection ID length to 8-byte long
       bool useConnectionEndWithErrorCallback = false);
 
   // Testing only API:

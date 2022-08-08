@@ -141,6 +141,12 @@ FrameScheduler::Builder::Builder(
       packetNumberSpace_(packetNumberSpace),
       name_(std::move(name)) {}
 
+#if TAO_DISABLE_ENCRYPTION
+EncryptionLevel FrameScheduler::Builder::getEncryptionLevel() {
+    return encryptionLevel_;
+}
+#endif
+
 FrameScheduler::Builder& FrameScheduler::Builder::streamFrames() {
   streamFrameScheduler_ = true;
   return *this;

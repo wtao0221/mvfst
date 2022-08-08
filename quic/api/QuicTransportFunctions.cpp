@@ -20,6 +20,12 @@
 #include <quic/state/QuicStreamFunctions.h>
 #include <quic/state/SimpleFrameFunctions.h>
 
+#if TAO_DISABLE_ENCRYPTION
+#include <fizz/protocol/Types.h>
+#include <iostream>
+#include <cstdio>
+#endif
+
 namespace {
 
 /*
@@ -358,12 +364,107 @@ DataPathResult iobufChainBasedBuildScheduleEncrypt(
   packet->header->coalesce();
   auto headerLen = packet->header->length();
   auto bodyLen = packet->body->computeChainDataLength();
+#if TAO_DISABLE_ENCRYPTION
+  if (header.asLong()) {
+	VLOG(0) << "we are transmitting LONG HDRS";
+	auto unencrypted =
+  	    folly::IOBuf::create(headerLen + bodyLen + aead.getCipherOverhead());
+
+  	auto bodyCursor = folly::io::Cursor(packet->body.get()); // Tao: write body data to unencrypted buf
+  	bodyCursor.pull(unencrypted->writableData() + headerLen, bodyLen);
+  	unencrypted->advance(headerLen);
+  	unencrypted->append(bodyLen);
+  	/*
+  	 * Tao: encryption here?
+  	 */
+  	auto packetBuf = aead.inplaceEncrypt(
+  	    std::move(unencrypted), packet->header.get(), packetNum);
+  	DCHECK(packetBuf->headroom() == headerLen);
+  	packetBuf->clear();
+  	auto headerCursor = folly::io::Cursor(packet->header.get());
+  	headerCursor.pull(packetBuf->writableData(), headerLen);
+  	packetBuf->append(headerLen + bodyLen + aead.getCipherOverhead());
+
+  	HeaderForm headerForm = packet->packet.header.getHeaderForm();
+  	encryptPacketHeader(
+  	    headerForm,
+  	    packetBuf->writableData(),
+  	    headerLen,
+  	    packetBuf->data() + headerLen,
+  	    packetBuf->length() - headerLen,
+  	    headerCipher);
+  	auto encodedSize = packetBuf->computeChainDataLength();
+  	auto encodedBodySize = encodedSize - headerLen;
+#if !FOLLY_MOBILE
+	if (encodedSize > connection.udpSendPacketLen) {
+  	  LOG_EVERY_N(ERROR, 5000)
+  	      << "Quic sending pkt larger than limit, encodedSize=" << encodedSize
+  	      << " encodedBodySize=" << encodedBodySize;
+  	}
+#endif
+	bool ret = ioBufBatch.write(std::move(packetBuf), encodedSize);
+  	if (ret) {
+  	  // update stats and connection
+  	  QUIC_STATS(connection.statsCallback, onWrite, encodedSize);
+  	  QUIC_STATS(connection.statsCallback, onPacketSent);
+  	}
+  	return DataPathResult::makeWriteResult(
+  	    ret, std::move(result), encodedSize, encodedBodySize);
+  	}
+  // Tao: short header packet
+  	else { 
+		VLOG(0) << "we are transmitting SHORT HDRS";
+		auto unencrypted = 
+			folly::IOBuf::create(headerLen + bodyLen);
+		// VLOG(0) << "after create " << unencrypted->computeChainDataLength();
+		auto bodyCursor = folly::io::Cursor(packet->body.get());
+		// Tao: write body data to unencrypted buf
+		bodyCursor.pull(unencrypted->writableData() + headerLen, bodyLen);
+		// VLOG(0) << "after pull bodyCursor " << unencrypted->computeChainDataLength();
+		// unencrypted->advance(headerLen);
+		unencrypted->append(headerLen+bodyLen);
+		// VLOG(0) << "after append bodyCursor " << unencrypted->computeChainDataLength();
+		auto headerCursor = folly::io::Cursor(packet->header.get());
+		headerCursor.pull(unencrypted->writableData(), headerLen);
+
+		auto encodedSize = unencrypted->computeChainDataLength();
+		auto encodedBodySize = encodedSize - headerLen;
+		/*
+		VLOG(0) << "bodylen " << bodyLen;
+		VLOG(0) << "written " << encodedSize << " " << encodedBodySize << " " << headerLen;
+		printf("%2x\n", *(unencrypted->data()+headerLen));
+		int j=0;
+  		for (int i=0; i<unencrypted->computeChainDataLength(); i++) {
+  		    printf("%2x", *(unencrypted->data()+i));
+  		    j++;
+  		    if (j==8) {
+  		  	  printf("\n");
+  		  	  j=0;
+  		    }
+  		}
+		printf("\n");
+		*/
+
+		bool ret = ioBufBatch.write(std::move(unencrypted), encodedSize); 
+		if (ret) { 
+			// update stats and connection
+			QUIC_STATS(connection.statsCallback, onWrite, encodedSize);
+			QUIC_STATS(connection.statsCallback, onPacketSent);
+		} 
+		return DataPathResult::makeWriteResult( 
+				ret, std::move(result), encodedSize, encodedBodySize);
+	}
+// Tao: original ones
+#else
   auto unencrypted = folly::IOBuf::createCombined(
       headerLen + bodyLen + aead.getCipherOverhead());
-  auto bodyCursor = folly::io::Cursor(packet->body.get());
+  auto bodyCursor = folly::io::Cursor(packet->body.get());  // Tao: write body data to unencrypted buf
   bodyCursor.pull(unencrypted->writableData() + headerLen, bodyLen);
   unencrypted->advance(headerLen);
   unencrypted->append(bodyLen);
+  /*
+   * Tao: encryption here?
+   */
   auto packetBuf = aead.inplaceEncrypt(
       std::move(unencrypted), packet->header.get(), packetNum);
   DCHECK(packetBuf->headroom() == headerLen);
@@ -399,6 +500,7 @@ DataPathResult iobufChainBasedBuildScheduleEncrypt(
   }
   return DataPathResult::makeWriteResult(
       ret, std::move(result), encodedSize, encodedBodySize);
+#endif
 }
 
 } // namespace
@@ -1243,6 +1345,7 @@ void writeCloseCommon(
     LOG(ERROR) << "Close frame too large " << connection;
     return;
   }
+#if !TAO_DISABLE_ENCRYPTION
   auto packet = std::move(packetBuilder).buildPacket();
   packet.header->coalesce();
   packet.body->reserve(0, aead.getCipherOverhead());
@@ -1259,6 +1362,15 @@ void writeCloseCommon(
       headerCipher);
   auto packetBuf = std::move(packet.header);
   packetBuf->prependChain(std::move(body));
+#else
+  auto packet = std::move(packetBuilder).buildPacket();
+  packet.header->coalesce();
+  packet.body->reserve(0, aead.getCipherOverhead());
+  CHECK_GE(packet.body->tailroom(), aead.getCipherOverhead());
+  packet.body->coalesce();
+  auto packetBuf = std::move(packet.header);
+  packetBuf->prependChain(std::move(packet.body));
+#endif
   auto packetSize = packetBuf->computeChainDataLength();
   if (connection.qLogger) {
     connection.qLogger->addPacket(packet.packet, packetSize);
@@ -1269,6 +1381,7 @@ void writeCloseCommon(
   // Increment the sequence number.
   increaseNextPacketNum(connection, pnSpace);
   // best effort writing to the socket, ignore any errors.
+  // Tao: send out data
   auto ret = sock.write(connection.peerAddress, packetBuf);
   connection.lossState.totalBytesSent += packetSize;
   if (ret < 0) {

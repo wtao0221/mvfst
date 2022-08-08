@@ -750,6 +750,7 @@ QuicFrame parseFrame(
   };
   cursor.reset(queue.front());
   FrameType frameType = static_cast<FrameType>(frameTypeInt->first);
+  // VLOG(0) << "frameType " << (uint64_t)frameType << "\n";
   try {
     switch (frameType) {
       case FrameType::PADDING:
@@ -837,8 +838,11 @@ QuicFrame parseFrame(
       case FrameType::ACK_FREQUENCY:
         return QuicFrame(decodeAckFrequencyFrame(cursor));
     }
-  } catch (const std::exception&) {
+  // } catch (const std::exception&) {
+  } catch (const std::exception& e) {
     error = true;
+    auto c = dynamic_cast<const QuicTransportException&>(e);
+    VLOG(0) << c.what();
     throw QuicTransportException(
         folly::to<std::string>(
             "Frame format invalid, type=", frameTypeInt->first),
@@ -858,6 +862,7 @@ RegularQuicPacket decodeRegularPacket(
     PacketHeader&& header,
     const CodecParameters& params,
     std::unique_ptr<folly::IOBuf> packetData) {
+#if !TAO_DISABLE_ENCRYPTION
   RegularQuicPacket packet(std::move(header));
   BufQueue queue;
   queue.append(std::move(packetData));
@@ -865,6 +870,20 @@ RegularQuicPacket decodeRegularPacket(
     packet.frames.push_back(parseFrame(queue, packet.header, params));
   }
   return packet;
+#else
+  // if (header.asLong()) {
+  if (true) {
+      RegularQuicPacket packet(std::move(header));
+      BufQueue queue;
+      queue.append(std::move(packetData));
+      while (queue.chainLength() > 0) {
+          packet.frames.push_back(parseFrame(queue, packet.header, params));
+      } 
+      return packet;
+  }
+  else {
+  }
+#endif
 }
 
 folly::Optional<VersionNegotiationPacket> decodeVersionNegotiation(
